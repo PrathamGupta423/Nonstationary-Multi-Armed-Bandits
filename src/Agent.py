@@ -7,9 +7,10 @@ from scipy.optimize import brentq
 class BanditAlgorithm(ABC):
     """Abstract base class for any bandit algorithm."""
 
-    def __init__(self, n_arms: int, horizon: int):
+    def __init__(self, n_arms: int, horizon: int, **kwargs):
         self.n_arms = n_arms
         self.horizon = horizon
+        self.kwargs = kwargs  # Store extra kwargs for derived classes
         self.reset()
 
     @abstractmethod
@@ -113,22 +114,20 @@ class UCB(BanditAlgorithm):
         self.counts = np.zeros(self.n_arms)
         self.values = np.zeros(self.n_arms)
         self.delta = 1e-2
+        self.t = 0
+    
     def select_arm(self, t: int) -> int:
-        ucb_values = np.zeros(self.n_arms)
-        for arm in range(self.n_arms):
-            if self.counts[arm] == 0:
-                return arm
-            bonus = np.sqrt((2 * np.log(1 / self.delta)) / self.counts[arm])
-            ucb_values[arm] = self.values[arm] + bonus
+        self.t += 1
+        if self.t <= self.n_arms:
+            return self.t - 1
+        ucb_values = self.values + np.sqrt((2 * np.log(self.t)) / self.counts)
         return int(np.argmax(ucb_values))
-
     def update(self, arm: int, reward: float):
         self.counts[arm] += 1
         n = self.counts[arm]
         value = self.values[arm]
         new_value = ((n - 1) / n) * value + (1 / n) * reward
         self.values[arm] = new_value
-    
     def run(self, env: Bandit_Environment) -> Dict[str, Any]:
         rewards = np.zeros(self.horizon)
         actions = np.zeros(self.horizon, dtype=int)
@@ -152,6 +151,7 @@ class UCB(BanditAlgorithm):
             "counts": self.counts,
             "values": self.values,
         }
+    
 
 def create_ucb_agent(n_arms: int, horizon: int) -> UCB:
     return UCB(n_arms=n_arms, horizon=horizon)
@@ -491,6 +491,7 @@ class GLR_KL_UCB(BanditAlgorithm):
             "klucb_counts": self.klucb.counts,
             "klucb_values": self.klucb.values,
         }
+
 def create_glr_kl_ucb_agent(n_arms: int, horizon: int, delta: float = 1e-2, c: float = 2, alpha_seq=None, global_restart: bool = False) -> GLR_KL_UCB:
     return GLR_KL_UCB(n_arms=n_arms, horizon=horizon, delta=delta, c=c, alpha_seq=alpha_seq, global_restart=global_restart)
     
@@ -742,13 +743,14 @@ def create_impcpd_agent(n_arms: int, horizon: int, delta: float = 1e-2, gamma: f
     return ImpCPD(n_arms=n_arms, horizon=horizon, delta=delta, gamma=gamma, alpha=alpha)
 
 class ADS_TS(BanditAlgorithm):
+    """Adaptive Shrinking Thompson Sampling with per-arm ADWIN."""
     def reset(self):
         self.delta = self.kwargs.get('delta', 1e-2)
         self.adwins = [ADWIN(delta=self.delta) for _ in range(self.n_arms)]
         self.alphas = np.ones(self.n_arms)
         self.betas = np.ones(self.n_arms)
 
-    def _update_posterior(self,arm):
+    def _update_posterior(self, arm):
         window = self.adwins[arm].get_samples()
         self.alphas[arm] = 1 + sum(window)
         self.betas[arm] = 1 + len(window) - sum(window)
@@ -758,10 +760,7 @@ class ADS_TS(BanditAlgorithm):
         return int(np.argmax(samples))
 
     def update(self, arm: int, reward: float):
-        change_detected = self.adwins[arm].add_element(reward)
-        if change_detected:
-            self.alphas[arm] = 1
-            self.betas[arm] = 1
+        self.adwins[arm].add_element(reward)
         self._update_posterior(arm)
 
     def run(self, env: Bandit_Environment) -> Dict[str, Any]:
@@ -791,64 +790,32 @@ class ADS_TS(BanditAlgorithm):
 def create_ads_ts_agent(n_arms: int, horizon: int, delta: float = 1e-2) -> ADS_TS:
     return ADS_TS(n_arms=n_arms, horizon=horizon, delta=delta)
 
-class ADS_kl_UCB(BanditAlgorithm):
-    def reset(self):
-        self.delta = self.kwargs.get('delta', 1e-2)
-        self.adwins = [ADWIN(delta=self.delta) for _ in range(self.n_arms)]
-        self.klucb = KL_UCB(self.n_arms, self.horizon)
-        self.t = 0 
-
-    def select_arm(self):
-        self.t += 1
-        return self.klucb.select_arm(self.t)
-    def update(self, arm: int, reward: float):
-        self.adwins[arm].add_element(reward)
-        window = self.adwins[arm].get_samples()
-        self.klucb.counts[arm] = len(window)
-        self.klucb.values[arm] = np.mean(window) if window else 0
-        self.klucb.update(arm, reward)
-    def run(self, env: Bandit_Environment) -> Dict[str, Any]:
-        rewards = np.zeros(self.horizon)
-        actions = np.zeros(self.horizon, dtype=int)
-
-        env.reset_env()
-        self.reset()
-
-        for t in range(self.horizon):
-            arm = self.select_arm()
-            reward = env.pull(arm)
-            self.update(arm, reward)
-
-            actions[t] = arm
-            rewards[t] = reward
-
-        return {
-            "actions": actions,
-            "rewards": rewards,
-            "cumulative_reward": rewards.sum(),
-            "mean_reward": rewards.mean(),
-            "klucb_counts": self.klucb.counts,
-            "klucb_values": self.klucb.values,
-        }
-def create_ads_kl_ucb_agent(n_arms: int, horizon: int, delta: float = 1e-2) -> ADS_kl_UCB:
-    return ADS_kl_UCB(n_arms=n_arms, horizon=horizon, delta=delta)
-
 
 class ADS_UCB(BanditAlgorithm):
+    """Adaptive Shrinking UCB with per-arm ADWIN."""
     def reset(self):
         self.delta = self.kwargs.get('delta', 1e-2)
         self.adwins = [ADWIN(delta=self.delta) for _ in range(self.n_arms)]
-        self.ucb = UCB(self.n_arms, self.horizon)
+        self.counts = np.zeros(self.n_arms)
+        self.values = np.zeros(self.n_arms)
         self.t = 0
-    def select_arm(self):
+
+    def select_arm(self) -> int:
         self.t += 1
-        return self.ucb.select_arm(self.t)
+        ucb_values = np.zeros(self.n_arms)
+        for arm in range(self.n_arms):
+            if self.counts[arm] == 0:
+                return arm
+            bonus = np.sqrt((2 * np.log(self.t)) / self.counts[arm])
+            ucb_values[arm] = self.values[arm] + bonus
+        return int(np.argmax(ucb_values))
+
     def update(self, arm: int, reward: float):
         self.adwins[arm].add_element(reward)
         window = self.adwins[arm].get_samples()
-        self.ucb.counts[arm] = len(window)
-        self.ucb.values[arm] = np.mean(window) if window else 0
-        self.ucb.update(arm, reward)
+        self.counts[arm] = len(window)
+        self.values[arm] = np.mean(window) if window else 0
+
     def run(self, env: Bandit_Environment) -> Dict[str, Any]:
         rewards = np.zeros(self.horizon)
         actions = np.zeros(self.horizon, dtype=int)
@@ -869,8 +836,79 @@ class ADS_UCB(BanditAlgorithm):
             "rewards": rewards,
             "cumulative_reward": rewards.sum(),
             "mean_reward": rewards.mean(),
-            "ucb_counts": self.ucb.counts,
-            "ucb_values": self.ucb.values,
+            "counts": self.counts,
+            "values": self.values,
         }
+
 def create_ads_ucb_agent(n_arms: int, horizon: int, delta: float = 1e-2) -> ADS_UCB:
     return ADS_UCB(n_arms=n_arms, horizon=horizon, delta=delta)
+
+
+class ADS_kl_UCB(BanditAlgorithm):
+    """Adaptive Shrinking KL-UCB with per-arm ADWIN."""
+    def reset(self):
+        self.delta = self.kwargs.get('delta', 1e-2)
+        self.adwins = [ADWIN(delta=self.delta) for _ in range(self.n_arms)]
+        self.counts = np.zeros(self.n_arms)
+        self.values = np.zeros(self.n_arms)
+        self.t = 0
+
+    def kl_confidence(self, t, emp_mean, num_pulls):
+        if num_pulls == 0:
+            return 1.0
+        lower_bound = emp_mean
+        upper_bound = 1.0
+        precision = 1e-5
+        max_iter = 50
+        n = 0
+        log_term = np.log(1 + t * (np.log(t))**2)
+        while n < max_iter and upper_bound - lower_bound > precision:
+            q = (lower_bound + upper_bound) / 2
+            if KL_bernouli(emp_mean, q) > (log_term / num_pulls):
+                upper_bound = q
+            else:
+                lower_bound = q
+            n += 1
+        return (lower_bound + upper_bound) / 2
+
+    def select_arm(self) -> int:
+        self.t += 1
+        if self.t <= self.n_arms:
+            return self.t - 1
+        kl_ucb_values = np.zeros(self.n_arms)
+        for arm in range(self.n_arms):
+            kl_ucb_values[arm] = self.kl_confidence(self.t, self.values[arm], self.counts[arm])
+        return int(np.argmax(kl_ucb_values))
+
+    def update(self, arm: int, reward: float):
+        self.adwins[arm].add_element(reward)
+        window = self.adwins[arm].get_samples()
+        self.counts[arm] = len(window)
+        self.values[arm] = np.mean(window) if window else 0
+
+    def run(self, env: Bandit_Environment) -> Dict[str, Any]:
+        rewards = np.zeros(self.horizon)
+        actions = np.zeros(self.horizon, dtype=int)
+
+        env.reset_env()
+        self.reset()
+
+        for t in range(self.horizon):
+            arm = self.select_arm()
+            reward = env.pull(arm)
+            self.update(arm, reward)
+
+            actions[t] = arm
+            rewards[t] = reward
+
+        return {
+            "actions": actions,
+            "rewards": rewards,
+            "cumulative_reward": rewards.sum(),
+            "mean_reward": rewards.mean(),
+            "counts": self.counts,
+            "values": self.values,
+        }
+
+def create_ads_kl_ucb_agent(n_arms: int, horizon: int, delta: float = 1e-2) -> ADS_kl_UCB:
+    return ADS_kl_UCB(n_arms=n_arms, horizon=horizon, delta=delta)
