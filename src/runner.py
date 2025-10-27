@@ -25,6 +25,7 @@ import numpy as np
 from tqdm import tqdm
 import json
 import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def run_experiment(Environment_generator, Agent_generator) -> dict:
     samples = 100
@@ -145,3 +146,498 @@ if __name__ == "__main__":
         plt.savefig(plot_filename)
         plt.close()
         print(f"Saved plot to {plot_filename}")
+
+
+
+
+def run_adr_ts_static_seed(H,seed, create_adr_ts_agent, create_static_env_paper):
+    env = create_static_env_paper(seed=seed)
+    arms = env.n_arms
+    agent = create_adr_ts_agent(n_arms=arms, horizon=H, delta=1e-3)
+    output = agent.run(env)
+    ideal_reward = env.ideal_reward(Horizon=H)
+    cumulative_regret = ideal_reward - output["cumulative_reward"]
+    return cumulative_regret
+
+def run_adr_ts_dynamic_seed(H,seed, create_adr_ts_agent, create_dynamic_env_paper):
+    env = create_dynamic_env_paper(seed=seed, time_horizon=H)
+    arms = env.n_arms
+    agent = create_adr_ts_agent(n_arms=arms, horizon=H, delta=1e-3)
+    output = agent.run(env)
+    ideal_reward = env.ideal_reward(Horizon=H)
+    cumulative_regret = ideal_reward - output["cumulative_reward"]
+    return cumulative_regret
+
+
+def run_adr_ts_static():
+    from Agent import create_adr_ts_agent
+    from Environment import create_static_env_paper
+
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+
+    import os
+    # make directory if not exists
+    if not os.path.exists("adr_ts_static_results"):
+        os.makedirs("adr_ts_static_results")
+
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_static_seed,
+                    H,
+                    seed,
+                    create_adr_ts_agent,
+                    create_static_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+    
+    with open("adr_ts_static_results/results.json", "w") as f:
+        json.dump(results, f)
+
+
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret")
+    plt.title("ADR-Thompson Sampling on Static Bernoulli Bandit")
+    plt.grid()
+    plt.savefig("adr_ts_static_results/adr_ts_static_experiment_results.png")
+
+def run_adr_ts_gradual():
+    from Agent import create_adr_ts_agent
+    from Environment import create_gradual_env_paper
+
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+
+    import os
+    # get current directory
+    cwd = os.getcwd()
+    # make directory if not exists
+    if not os.path.exists(f"{cwd}/adr_ts_gradual_results"):
+        os.makedirs(f"{cwd}/adr_ts_gradual_results")
+
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_dynamic_seed,
+                    H,
+                    seed,
+                    create_adr_ts_agent,
+                    create_gradual_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+
+    with open(f"{cwd}/adr_ts_gradual_results/results.json", "w") as f:
+        json.dump(results, f)
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret")
+    plt.title("ADR-Thompson Sampling on Gradual Bernoulli Bandit")
+    plt.grid()
+    plt.savefig(f"{cwd}/adr_ts_gradual_results/adr_ts_gradual_experiment_results.png")
+
+def run_adr_ts_abrupt():
+    from Agent import create_adr_ts_agent
+    from Environment import create_abrupt_env_paper
+
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+
+    import os
+    # get current directory
+    cwd = os.getcwd()
+    # make directory if not exists
+    if not os.path.exists(f"{cwd}/adr_ts_abrupt_results"):
+        os.makedirs(f"{cwd}/adr_ts_abrupt_results")
+
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_dynamic_seed,
+                    H,
+                    seed,
+                    create_adr_ts_agent,
+                    create_abrupt_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+
+    with open(f"{cwd}/adr_ts_abrupt_results/results.json", "w") as f:
+        json.dump(results, f)
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret")
+    plt.title("ADR-Thompson Sampling on Abrupt Bernoulli Bandit")
+    plt.grid()
+    plt.savefig(f"{cwd}/adr_ts_abrupt_results/adr_ts_abrupt_experiment_results.png")
+
+def run_adr_ts_locally_abrupt():
+    from Agent import create_adr_ts_agent
+    from Environment import create_locally_abrupt_env_paper
+
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+
+    import os
+    # get current directory
+    cwd = os.getcwd()
+    # make directory if not exists
+    if not os.path.exists(f"{cwd}/adr_ts_locally_abrupt_results"):
+        os.makedirs(f"{cwd}/adr_ts_locally_abrupt_results")
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_dynamic_seed,
+                    H,
+                    seed,
+                    create_adr_ts_agent,
+                    create_locally_abrupt_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+
+    with open(f"{cwd}/adr_ts_locally_abrupt_results/results.json", "w") as f:
+        json.dump(results, f)
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret")
+    plt.title("ADR-Thompson Sampling on Locally Abrupt Bernoulli Bandit")
+    plt.grid()
+    plt.savefig(f"{cwd}/adr_ts_locally_abrupt_results/adr_ts_locally_abrupt_experiment_results.png")
+
+def run_adr_kl_ucb_static():
+    from Agent import create_adr_kl_ucb_agent
+    from Environment import create_static_env_paper
+
+    
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+    
+    import os
+    # make directory if not exists
+    if not os.path.exists("adr_kl_ucb_static_results"):
+        os.makedirs("adr_kl_ucb_static_results")
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_static_seed,
+                    H,
+                    seed,
+                    create_adr_kl_ucb_agent,
+                    create_static_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+
+
+    with open("adr_kl_ucb_static_results/results.json", "w") as f:
+        json.dump(results, f)
+
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret") 
+    plt.title("ADR-KL-UCB on Static Bernoulli Bandit")
+    plt.grid()
+    plt.savefig("adr_kl_ucb_static_results/adr_kl_ucb_static_experiment_results.png")
+
+def run_adr_kl_ucb_gradual():
+    from Agent import create_adr_kl_ucb_agent
+    from Environment import create_gradual_env_paper
+
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_dynamic_seed,
+                    H,
+                    seed,
+                    create_adr_kl_ucb_agent,
+                    create_gradual_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+
+    import os
+    if not os.path.exists("adr_kl_ucb_gradual_results"):
+        os.makedirs("adr_kl_ucb_gradual_results")
+
+    with open("adr_kl_ucb_gradual_results/results.json", "w") as f:
+        json.dump(results, f)
+
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret")
+    plt.title("ADR-KL-UCB on Gradual Bernoulli Bandit")
+    plt.grid()
+    plt.savefig("adr_kl_ucb_gradual_results/adr_kl_ucb_gradual_experiment_results.png")
+
+def run_adr_kl_ucb_abrupt():
+    from Agent import create_adr_kl_ucb_agent
+    from Environment import create_abrupt_env_paper
+
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_dynamic_seed,
+                    H,
+                    seed,
+                    create_adr_kl_ucb_agent,
+                    create_abrupt_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+
+    import os
+    if not os.path.exists("adr_kl_ucb_abrupt_results"):
+        os.makedirs("adr_kl_ucb_abrupt_results")
+
+    with open("adr_kl_ucb_abrupt_results/results.json", "w") as f:
+        json.dump(results, f)
+
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret")
+    plt.title("ADR-KL-UCB on Abrupt Bernoulli Bandit")
+    plt.grid()
+    plt.savefig("adr_kl_ucb_abrupt_results/adr_kl_ucb_abrupt_experiment_results.png")
+
+def run_adr_kl_ucb_locally_abrupt():
+    from Agent import create_adr_kl_ucb_agent
+    from Environment import create_locally_abrupt_env_paper
+
+    sample = 100
+    time_horizons = [400*i for i in range(1, 26)]
+    results = {
+        "time_horizons": time_horizons,
+        "average_cumulative_regret": [],
+        "std_cumulative_regret": [],
+    }
+    for H in time_horizons:
+        cumulative_regrets = []
+
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    run_adr_ts_dynamic_seed,
+                    H,
+                    seed,
+                    create_adr_kl_ucb_agent,
+                    create_locally_abrupt_env_paper
+                ) for seed in range(sample)
+            ]
+            cumulative_regrets = []
+            for future in as_completed(futures):
+                cumulative_regret = future.result()
+                cumulative_regrets.append(cumulative_regret)
+
+        avg_regret = np.mean(cumulative_regrets)
+        std_regret = np.std(cumulative_regrets)
+        results["average_cumulative_regret"].append(avg_regret)
+        results["std_cumulative_regret"].append(std_regret)
+        print(f"Horizon: {H}, Avg Regret: {avg_regret}, Std Regret: {std_regret}")
+
+    import os
+    if not os.path.exists("adr_kl_ucb_locally_abrupt_results"):
+        os.makedirs("adr_kl_ucb_locally_abrupt_results")
+
+    with open("adr_kl_ucb_locally_abrupt_results/results.json", "w") as f:
+        json.dump(results, f)
+
+    import matplotlib.pyplot as plt
+    plt.errorbar(
+        results["time_horizons"],
+        results["average_cumulative_regret"],
+        yerr=results["std_cumulative_regret"],
+        fmt='-o'
+    )
+    plt.xlabel("Time Horizon")
+    plt.ylabel("Average Cumulative Regret")
+    plt.title("ADR-KL-UCB on Locally Abrupt Bernoulli Bandit")
+    plt.grid()
+    plt.savefig("adr_kl_ucb_locally_abrupt_results/adr_kl_ucb_locally_abrupt_experiment_results.png")
+
+def adr_experiments():
+    run_adr_ts_static()
+    run_adr_ts_gradual()
+    run_adr_ts_abrupt()
+    run_adr_ts_locally_abrupt()
+    run_adr_kl_ucb_static()
+    run_adr_kl_ucb_gradual()
+    run_adr_kl_ucb_abrupt()
+    run_adr_kl_ucb_locally_abrupt()
+
+if __name__ == "__main__":
+    adr_experiments()

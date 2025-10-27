@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 import numpy as np
 from Environment import Bandit_Environment
-from typing import Dict, Any
 from collections import deque
+from typing import Dict, Any, List, Tuple
 from scipy.optimize import brentq
 
 class BanditAlgorithm(ABC):
@@ -142,6 +142,7 @@ class ADWIN:
     def get_window(self, arm):
         n = self.window_sizes[arm]
         return self.windows[arm, :n]
+    
 class UCB(BanditAlgorithm):
     def reset(self):
         self.counts = np.zeros(self.n_arms)
@@ -232,6 +233,7 @@ class KL_UCB(BanditAlgorithm):
         new_value = ((n - 1) / n) * value + (1 / n) * reward
         self.values[arm] = new_value
     
+
     def run(self, env: Bandit_Environment) -> Dict[str, Any]:
         rewards = np.zeros(self.horizon)
         actions = np.zeros(self.horizon, dtype=int)
@@ -258,6 +260,7 @@ class KL_UCB(BanditAlgorithm):
 
 def create_kl_ucb_agent(n_arms: int, horizon: int, c: float = 2) -> KL_UCB:
     return KL_UCB(n_arms=n_arms, horizon=horizon, c=c)
+
 
 class RExp3(BanditAlgorithm):
     def reset(self):
@@ -450,6 +453,7 @@ class Sliding_Window_Thompson_sampling(BanditAlgorithm):
 def create_sliding_window_thompson_sampling_agent(n_arms: int, horizon: int, window_size: int = 100) -> Sliding_Window_Thompson_sampling:
     return Sliding_Window_Thompson_sampling(n_arms=n_arms, horizon=horizon, window_size=window_size)
 
+
 class Sliding_Window_UCB(BanditAlgorithm):
     def reset(self):
         self.window_size = self.kwargs.get('window_size', 100)
@@ -526,6 +530,7 @@ class Sliding_Window_UCB(BanditAlgorithm):
 
 def create_sliding_window_ucb_agent(n_arms: int, horizon: int, window_size: int = 100, c: float = 2) -> Sliding_Window_UCB:
     return Sliding_Window_UCB(n_arms=n_arms, horizon=horizon, window_size=window_size, c=c)
+
 
 class GLR_KL_UCB(BanditAlgorithm):
     def reset(self):
@@ -843,7 +848,6 @@ def create_ucbl_cpd_agent(n_arms: int, horizon: int, delta: float = 1e-2) -> UCB
     return UCBL_CPD(n_arms=n_arms, horizon=horizon, delta=delta)
 
 
-
 class ImpCPD(BanditAlgorithm):
     def reset(self):
         self.delta = self.kwargs.get('delta', 1e-2)
@@ -975,6 +979,7 @@ class ImpCPD(BanditAlgorithm):
         }
 def create_impcpd_agent(n_arms: int, horizon: int, delta: float = 1e-2, gamma: float = 0.5, alpha: float = 1.5) -> ImpCPD:
     return ImpCPD(n_arms=n_arms, horizon=horizon, delta=delta, gamma=gamma, alpha=alpha)
+
 
 class ADS_TS(BanditAlgorithm):
     """Adaptive Shrinking Thompson Sampling with per-arm ADWIN."""
@@ -1129,3 +1134,492 @@ class ADS_kl_UCB(BanditAlgorithm):
 
 def create_ads_kl_ucb_agent(n_arms: int, horizon: int, delta: float = 1e-2) -> ADS_kl_UCB:
     return ADS_kl_UCB(n_arms=n_arms, horizon=horizon, delta=delta)
+
+
+
+class Bucket:
+    """Bucket for ADWIN2 exponential histogram."""
+    def __init__(self, capacity: int, content: float):
+        self.capacity = capacity  # Number of elements
+        self.content = content    # Sum of elements
+    
+    def __repr__(self):
+        return f"Bucket(cap={self.capacity}, content={self.content})"
+
+class ADWIN2:
+    """
+    ADWIN2: Efficient adaptive windowing using exponential histograms.
+    Memory: O(M * log(W/M)) where W is window size, M is a parameter
+    Time: O(log W) amortized per element
+    """
+    def __init__(self, delta=1e-3, M=5):
+        self.delta = delta
+        self.M = M  # Controls memory/time tradeoff
+        self.buckets = []  # List of buckets
+        self.total = 0.0  # Sum of all elements
+        self.width = 0    # Total number of elements
+        self.variance = 0.0  # For variance calculation
+        self.sum_sq = 0.0    # Sum of squares
+    
+    def add_element(self, value: float) -> bool:
+        """
+        Add a new element and check for change.
+        Returns True if change detected (window was shrunk).
+        """
+        # Create new bucket with single element
+        self.buckets.insert(0, Bucket(1, value))
+        self.total += value
+        self.sum_sq += value * value
+        self.width += 1
+        
+        # Compress buckets (merge buckets of same capacity)
+        self._compress_buckets()
+        
+        # Update variance
+        if self.width > 0:
+            mean = self.total / self.width
+            self.variance = (self.sum_sq / self.width) - (mean * mean)
+            self.variance = max(0, self.variance)  # Numerical stability
+        
+        # Check for change
+        change_detected = self._detect_change()
+        
+        return change_detected
+    
+    def _compress_buckets(self):
+        """Merge buckets to maintain exponential histogram structure."""
+        # Repeatedly merge until we have at most M+1 buckets of each capacity
+        changed = True
+        while changed:
+            changed = False
+            # Count buckets of each capacity
+            capacity_count = {}
+            for bucket in self.buckets:
+                capacity_count[bucket.capacity] = capacity_count.get(bucket.capacity, 0) + 1
+            
+            # Find capacity with more than M+1 buckets
+            for capacity, count in capacity_count.items():
+                if count > self.M + 1:
+                    # Find the two oldest (rightmost) buckets with this capacity
+                    indices = [i for i in range(len(self.buckets)) if self.buckets[i].capacity == capacity]
+                    
+                    if len(indices) >= 2:
+                        # Merge the two oldest buckets (highest indices)
+                        idx1 = indices[-1]
+                        idx2 = indices[-2]
+                        
+                        new_capacity = self.buckets[idx1].capacity + self.buckets[idx2].capacity
+                        new_content = self.buckets[idx1].content + self.buckets[idx2].content
+                        
+                        # Remove the older bucket and update the newer one
+                        self.buckets.pop(idx1)
+                        self.buckets[idx2] = Bucket(new_capacity, new_content)
+                        
+                        changed = True
+                        break  # Restart the process
+    
+    def _detect_change(self) -> bool:
+        """
+        Check all possible cuts for distribution change.
+        Returns True if change detected and window was shrunk.
+        """
+        if self.width < 2:
+            return False
+        
+        # We check cuts at exponentially spaced positions
+        # corresponding to bucket boundaries
+        n1 = 0
+        sum1 = 0.0
+        sum1_sq = 0.0
+        
+        for i in range(len(self.buckets)):
+            n1 += self.buckets[i].capacity
+            sum1 += self.buckets[i].content
+            
+            # For sum of squares approximation
+            mean_bucket = self.buckets[i].content / self.buckets[i].capacity
+            sum1_sq += self.buckets[i].capacity * (mean_bucket * mean_bucket)
+            
+            if n1 >= self.width - 1:
+                break
+            
+            n0 = self.width - n1
+            sum0 = self.total - sum1
+            
+            # Calculate means
+            mean0 = sum0 / n0 if n0 > 0 else 0
+            mean1 = sum1 / n1 if n1 > 0 else 0
+            
+            # Calculate threshold
+            if self._check_cut(n0, n1, mean0, mean1):
+                # Drop the oldest n0 elements
+                self._shrink_to_size(n1)
+                return True
+        
+        return False
+    
+    def _check_cut(self, n0: int, n1: int, mean0: float, mean1: float) -> bool:
+        """
+        Check if the difference between two subwindows is significant.
+        Uses the more practical formula with variance (Eq 2.1 in paper).
+        """
+        if n0 <= 0 or n1 <= 0:
+            return False
+        
+        # Harmonic mean
+        m = 1.0 / (1.0/n0 + 1.0/n1)
+        
+        # Adjusted delta for multiple hypothesis testing
+        # Using ln(n) instead of n for less conservative bound
+        delta_prime = self.delta / np.log(self.width) if self.width > 1 else self.delta
+        delta_prime = max(delta_prime, 1e-10)  # Numerical stability
+        
+        # Calculate threshold using variance (Equation 2.1 from paper)
+        sigma_sq = self.variance if self.variance > 0 else 0.25  # Use worst-case if variance is 0
+        
+        epsilon_cut = np.sqrt(2 * sigma_sq * np.log(2/delta_prime) / m)
+        epsilon_cut += (2.0 / (3.0 * m)) * np.log(2/delta_prime)
+        
+        # Check if difference is significant
+        return abs(mean0 - mean1) >= epsilon_cut
+    
+    def _shrink_to_size(self, new_width: int):
+        """Remove oldest elements to reduce window to new_width."""
+        removed = 0
+        
+        while removed < self.width - new_width and len(self.buckets) > 0:
+            oldest = self.buckets[-1]
+            
+            if removed + oldest.capacity <= self.width - new_width:
+                # Remove entire bucket
+                self.buckets.pop()
+                self.total -= oldest.content
+                
+                # Update sum of squares (approximation)
+                mean_bucket = oldest.content / oldest.capacity
+                self.sum_sq -= oldest.capacity * (mean_bucket * mean_bucket)
+                
+                removed += oldest.capacity
+            else:
+                # Partially remove bucket
+                elements_to_remove = self.width - new_width - removed
+                mean_bucket = oldest.content / oldest.capacity
+                content_to_remove = mean_bucket * elements_to_remove
+                
+                oldest.capacity -= elements_to_remove
+                oldest.content -= content_to_remove
+                self.total -= content_to_remove
+                self.sum_sq -= elements_to_remove * (mean_bucket * mean_bucket)
+                
+                removed += elements_to_remove
+        
+        self.width = new_width
+        
+        # Update variance
+        if self.width > 0:
+            mean = self.total / self.width
+            self.variance = (self.sum_sq / self.width) - (mean * mean)
+            self.variance = max(0, self.variance)
+    
+    def get_mean(self) -> float:
+        """Get current mean estimate."""
+        if self.width == 0:
+            return 0.0
+        return self.total / self.width
+    
+    def get_width(self) -> int:
+        """Get current window size."""
+        return self.width
+    
+    def get_samples(self) -> List[float]:
+        """
+        Approximate reconstruction of samples (for compatibility).
+        Note: ADWIN2 doesn't store individual samples, so this is an approximation.
+        """
+        samples = []
+        for bucket in reversed(self.buckets):
+            mean_val = bucket.content / bucket.capacity
+            samples.extend([mean_val] * bucket.capacity)
+        return samples
+
+class ADR_TS:
+    """ADR-bandit with Thompson Sampling as base algorithm, using ADWIN2."""
+    
+    def __init__(self, n_arms: int, horizon: int, delta=10**(-3), N=None, M=5):
+        self.n_arms = n_arms
+        self.horizon = horizon
+        self.delta = delta
+        self.M = M  # ADWIN2 parameter
+        # Monitoring parameter N (if not provided, use a default based on horizon)
+        self.N = N if N is not None else max(10, int(np.sqrt(horizon / n_arms)))
+        self.reset()
+    
+    def reset(self):
+        """Reset the entire algorithm."""
+        self.adwins = [ADWIN2(delta=self.delta, M=self.M) for _ in range(self.n_arms)]
+        self.alphas = np.ones(self.n_arms)
+        self.betas = np.ones(self.n_arms)
+        self.t = 0
+        self.block = 1
+        self.monitoring_arm_current = None
+        self.monitoring_arm_previous = None
+        self.block_start = 0
+        self.subblock_count = 0
+        self.pulls_per_arm = np.zeros(self.n_arms)
+    
+    def _update_posterior(self, arm):
+        """Update Beta posterior for a given arm."""
+        samples = self.adwins[arm].get_samples()
+        self.alphas[arm] = 1 + sum(samples)
+        self.betas[arm] = 1 + len(samples) - sum(samples)
+    
+    def _select_monitoring_arm(self):
+        """Select the monitoring arm (most pulled arm in current block)."""
+        return int(np.argmax(self.pulls_per_arm))
+    
+    def _is_monitoring_round(self):
+        """Check if current round should pull a monitoring arm."""
+        if self.block == 1:
+            return False
+        
+        rounds_in_block = self.t - self.block_start
+        
+        if rounds_in_block % self.n_arms == 0:
+            return True
+        elif rounds_in_block % self.n_arms == 1:
+            return True
+        return False
+    
+    def _get_monitoring_arm(self):
+        """Get which monitoring arm to pull."""
+        rounds_in_block = self.t - self.block_start
+        if rounds_in_block % self.n_arms == 0:
+            return self.monitoring_arm_previous
+        else:
+            return self.monitoring_arm_current
+    
+    def select_arm(self):
+        """Select arm using Thompson Sampling or monitoring."""
+        # Check if we should update monitoring arm
+        if self.block == 1 and self.t == self.n_arms * self.N:
+            self.monitoring_arm_current = self._select_monitoring_arm()
+            self.pulls_per_arm = np.zeros(self.n_arms)
+            self.block_start = self.t
+            self.block = 2
+        elif self.block >= 2:
+            block_size = self.n_arms * self.N * (2 ** (self.block - 1))
+            if self.t >= self.block_start + block_size:
+                self.monitoring_arm_previous = self.monitoring_arm_current
+                self.monitoring_arm_current = self._select_monitoring_arm()
+                self.pulls_per_arm = np.zeros(self.n_arms)
+                self.block_start = self.t
+                self.block += 1
+            elif self.t == self.block_start + (2 ** (self.block - 2) - 2) * self.n_arms * self.N:
+                self.monitoring_arm_current = self._select_monitoring_arm()
+        
+        # Check if this is a monitoring round
+        if self._is_monitoring_round() and self.block >= 2:
+            arm = self._get_monitoring_arm()
+            if arm is not None:
+                return arm
+        
+        # Otherwise, use Thompson Sampling
+        samples = np.random.beta(self.alphas, self.betas)
+        return int(np.argmax(samples))
+    
+    def update(self, arm: int, reward: float):
+        """Update the algorithm with observed reward."""
+        self.pulls_per_arm[arm] += 1
+        
+        # Add to ADWIN2 and check for change
+        change_detected = self.adwins[arm].add_element(reward)
+        
+        if change_detected:
+            # Global reset
+            self.reset()
+        else:
+            # Update posterior for the pulled arm
+            self._update_posterior(arm)
+        
+        self.t += 1
+    
+    def run(self, env: Bandit_Environment) -> Dict[str, Any]:
+        """Run the algorithm for the full horizon."""
+        rewards = np.zeros(self.horizon)
+        actions = np.zeros(self.horizon, dtype=int)
+        
+        env.reset_env()
+        self.reset()
+        
+        for t in range(self.horizon):
+            arm = self.select_arm()
+            reward = env.pull(arm)
+            self.update(arm, reward)
+            
+            actions[t] = arm
+            rewards[t] = reward
+        
+        return {
+            "actions": actions,
+            "rewards": rewards,
+            "cumulative_reward": rewards.sum(),
+            "mean_reward": rewards.mean(),
+            "alpha": self.alphas,
+            "beta": self.betas,
+        }
+
+class ADR_KL_UCB:
+    """ADR-bandit with KL-UCB as base algorithm, using ADWIN2."""
+    
+    def __init__(self, n_arms: int, horizon: int, delta=1e-3, N=None, M=5):
+        self.n_arms = n_arms
+        self.horizon = horizon
+        self.delta = delta
+        self.M = M
+        self.N = N if N is not None else max(10, int(np.sqrt(horizon / n_arms)))
+        self.reset()
+    
+    def reset(self):
+        """Reset the entire algorithm."""
+        self.adwins = [ADWIN2(delta=self.delta, M=self.M) for _ in range(self.n_arms)]
+        self.counts = np.zeros(self.n_arms)
+        self.values = np.zeros(self.n_arms)
+        self.t = 0
+        self.block = 1
+        self.monitoring_arm_current = None
+        self.monitoring_arm_previous = None
+        self.block_start = 0
+        self.pulls_per_arm = np.zeros(self.n_arms)
+    
+    def _kl_confidence(self, t, emp_mean, num_pulls):
+        """Compute KL-UCB upper confidence bound."""
+        if num_pulls == 0:
+            return 1.0
+        
+        lower_bound = emp_mean
+        upper_bound = 1.0
+        precision = 1e-5
+        max_iter = 50
+        log_term = np.log(1 + t * (np.log(max(t, 2)))**2)
+        
+        for _ in range(max_iter):
+            if upper_bound - lower_bound <= precision:
+                break
+            q = (lower_bound + upper_bound) / 2
+            if KL_bernouli(emp_mean, q) > (log_term / num_pulls):
+                upper_bound = q
+            else:
+                lower_bound = q
+        
+        return (lower_bound + upper_bound) / 2
+    
+    def _select_monitoring_arm(self):
+        """Select the monitoring arm (most pulled arm in current block)."""
+        return int(np.argmax(self.pulls_per_arm))
+    
+    def _is_monitoring_round(self):
+        """Check if current round should pull a monitoring arm."""
+        if self.block == 1:
+            return False
+        
+        rounds_in_block = self.t - self.block_start
+        
+        if rounds_in_block % self.n_arms == 0:
+            return True
+        elif rounds_in_block % self.n_arms == 1:
+            return True
+        return False
+    
+    def _get_monitoring_arm(self):
+        """Get which monitoring arm to pull."""
+        rounds_in_block = self.t - self.block_start
+        if rounds_in_block % self.n_arms == 0:
+            return self.monitoring_arm_previous
+        else:
+            return self.monitoring_arm_current
+    
+    def select_arm(self):
+        """Select arm using KL-UCB or monitoring."""
+        # Check if we should update monitoring arm
+        if self.block == 1 and self.t == self.n_arms * self.N:
+            self.monitoring_arm_current = self._select_monitoring_arm()
+            self.pulls_per_arm = np.zeros(self.n_arms)
+            self.block_start = self.t
+            self.block = 2
+        elif self.block >= 2:
+            block_size = self.n_arms * self.N * (2 ** (self.block - 1))
+            if self.t >= self.block_start + block_size:
+                self.monitoring_arm_previous = self.monitoring_arm_current
+                self.monitoring_arm_current = self._select_monitoring_arm()
+                self.pulls_per_arm = np.zeros(self.n_arms)
+                self.block_start = self.t
+                self.block += 1
+            elif self.t == self.block_start + (2 ** (self.block - 2) - 2) * self.n_arms * self.N:
+                self.monitoring_arm_current = self._select_monitoring_arm()
+        
+        # Check if this is a monitoring round
+        if self._is_monitoring_round() and self.block >= 2:
+            arm = self._get_monitoring_arm()
+            if arm is not None:
+                return arm
+        
+        # Initial exploration: pull each arm once
+        if self.t < self.n_arms:
+            return self.t
+        
+        # Otherwise, use KL-UCB
+        kl_ucb_values = np.zeros(self.n_arms)
+        for arm in range(self.n_arms):
+            kl_ucb_values[arm] = self._kl_confidence(self.t, self.values[arm], self.counts[arm])
+        
+        return int(np.argmax(kl_ucb_values))
+    
+    def update(self, arm: int, reward: float):
+        """Update the algorithm with observed reward."""
+        self.pulls_per_arm[arm] += 1
+        
+        # Add to ADWIN2 and check for change
+        change_detected = self.adwins[arm].add_element(reward)
+        
+        if change_detected:
+            # Global reset
+            self.reset()
+        else:
+            # Update estimates from ADWIN2
+            self.counts[arm] = self.adwins[arm].get_width()
+            self.values[arm] = self.adwins[arm].get_mean()
+        
+        self.t += 1
+    
+    def run(self, env: Bandit_Environment) -> Dict[str, Any]:
+        """Run the algorithm for the full horizon."""
+        rewards = np.zeros(self.horizon)
+        actions = np.zeros(self.horizon, dtype=int)
+        
+        env.reset_env()
+        self.reset()
+        
+        for t in range(self.horizon):
+            arm = self.select_arm()
+            reward = env.pull(arm)
+            self.update(arm, reward)
+            
+            actions[t] = arm
+            rewards[t] = reward
+        
+        return {
+            "actions": actions,
+            "rewards": rewards,
+            "cumulative_reward": rewards.sum(),
+            "mean_reward": rewards.mean(),
+            "counts": self.counts,
+            "values": self.values,
+        }
+
+def create_adr_ts_agent(n_arms: int, horizon: int, delta: float = 1e-4, N: int = 10) -> ADR_TS:
+    """Factory function for ADR-TS agent."""
+    return ADR_TS(n_arms=n_arms, horizon=horizon, delta=delta, N=N)
+
+def create_adr_kl_ucb_agent(n_arms: int, horizon: int, delta: float = 1e-4, N: int = 10) -> ADR_KL_UCB:
+    """Factory function for ADR-KL-UCB agent."""
+    return ADR_KL_UCB(n_arms=n_arms, horizon=horizon, delta=delta, N=N)

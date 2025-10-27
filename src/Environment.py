@@ -87,7 +87,7 @@ class GradualBernoulliBandit(Bandit_Environment):
         self.time += 1
 
 
-def create_gradual_env_paper(seed: int = 23626, time_horizon: int = 10000) -> GradualBernoulliBandit:
+def create_gradual_env_paper(seed, time_horizon: int) -> GradualBernoulliBandit:
     probs = [(100-i)/100 for i in range(100)]
     return GradualBernoulliBandit(probs=probs, time_horizon=time_horizon, seed=seed)
 
